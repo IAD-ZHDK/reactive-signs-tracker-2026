@@ -27,23 +27,28 @@ Call `poster.setup()` once from p5's setup function:
 ```js
 function setup() {
   createCanvas(windowWidth, windowHeight);
-  poster.setup();
+  poster.setup({ resize: true });
 }
 
 function draw() {
   const { x, y, z } = poster.position;
-  circle(x * width, y * height, z * 100);
+  circle(x, y, z * 100);
 }
 ```
 
-`poster.x`, `poster.y`, `poster.z`, and the `poster.posNormal` alias are also
-available. Use `poster.hasOSCSignal()` to check whether a position was received
-recently.
+After the canvas is created, the library records its original aspect ratio.
+It automatically fits the canvas inside the viewport on window and fullscreen
+changes without stretching it. Set `resize: false` to keep the original canvas
+dimensions.
 
-It connects to `ws://localhost:8025` and exposes a mutable normalized position.
-If no fresh OSC signal is available, moving the mouse updates `x` and `y`
-instead. The library checks for a restored WebSocket connection every two
-seconds and resumes OSC control as soon as a new position arrives.
+`poster.position` uses canvas pixel coordinates. `poster.posNormal`,
+`poster.x`, `poster.y`, and `poster.z` use values normalized to `0–1`. Use
+`poster.hasOSCSignal()` to check whether a position was received recently.
+
+It connects to `ws://localhost:8025`. Without a fresh OSC signal,
+`poster.position.x` and `poster.position.y` match p5.js `mouseX` and `mouseY`.
+The library continues checking for restored OSC connections and immediately
+resumes OSC control when a new position arrives.
 
 To change the WebSocket endpoint, pass options to `poster.setup()`:
 
@@ -53,7 +58,8 @@ poster.setup({
   port: 9000,
   address: '/position',
   retryInterval: 2000,
-  signalTimeout: 2000
+  signalTimeout: 2000,
+  resize: false
 });
 ```
 

@@ -8,7 +8,7 @@ function setup() {
 }
 
 function draw() {
-  background(0); // black
+  background(0, 0, 0); // black
   noStroke();
   fill(255); // white
 

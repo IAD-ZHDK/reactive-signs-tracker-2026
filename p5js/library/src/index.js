@@ -8,6 +8,7 @@ export {
   oscSignal,
   position,
   posNormal,
+  resizeToOriginalRatio,
   setUpOSC,
   x,
   y,

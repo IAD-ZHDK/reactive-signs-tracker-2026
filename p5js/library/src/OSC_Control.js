@@ -6,20 +6,25 @@ const DEFAULT_OPTIONS = {
   port: 8025,
   retryInterval: 2000,
   signalTimeout: 2000,
+  resize: true,
 };
 
 const osc = new OSC();
 let opened = false;
 let connectionOptions = DEFAULT_OPTIONS;
 let reconnectInterval;
+let fallbackInterval;
 let listeningToMouse = false;
+let pointer = null;
+let canvasObserver;
+let canvasAspectRatio;
 const positionAddresses = new Set();
 
-export const position = { x: 0.5, y: 0.5, z: 0 };
-export const posNormal = position;
-export let x = position.x;
-export let y = position.y;
-export let z = position.z;
+export const posNormal = { x: 0.5, y: 0.5, z: 0 };
+export const position = { x: 0, y: 0, z: 0 };
+export let x = posNormal.x;
+export let y = posNormal.y;
+export let z = posNormal.z;
 export let connected = false;
 export let oscSignal = false;
 export let lastOSC = 0;
@@ -31,17 +36,90 @@ function numberOrUndefined(value) {
 
 function updatePosition(nextX, nextY, nextZ) {
   if (nextX !== undefined) {
-    position.x = x = nextX;
+    posNormal.x = x = nextX;
   }
   if (nextY !== undefined) {
-    position.y = y = nextY;
+    posNormal.y = y = nextY;
   }
   if (nextZ !== undefined) {
-    position.z = z = nextZ;
+    posNormal.z = z = nextZ;
   }
 
+  const { logicalWidth, logicalHeight } = canvasSize();
+  position.x = posNormal.x * logicalWidth;
+  position.y = posNormal.y * logicalHeight;
+  position.z = posNormal.z;
   lastOSC = performance.now();
   oscSignal = true;
+}
+
+function canvasSize() {
+  const canvas = document.querySelector('canvas');
+  const rect = canvas?.getBoundingClientRect();
+  const logicalWidth = Number.isFinite(window.width) && window.width > 0
+    ? window.width
+    : canvas?.width || window.innerWidth;
+  const logicalHeight = Number.isFinite(window.height) && window.height > 0
+    ? window.height
+    : canvas?.height || window.innerHeight;
+
+  return {
+    left: rect?.left || 0,
+    top: rect?.top || 0,
+    width: rect?.width || logicalWidth,
+    height: rect?.height || logicalHeight,
+    logicalWidth,
+    logicalHeight,
+  };
+}
+
+function resizeCanvasToOriginalRatio() {
+  const canvas = document.querySelector('canvas');
+  if (!canvas) return;
+
+  if (!canvasAspectRatio) {
+    const { logicalWidth, logicalHeight } = canvasSize();
+    canvasAspectRatio = logicalWidth / logicalHeight;
+  }
+
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  let targetWidth = viewportWidth;
+  let targetHeight = targetWidth / canvasAspectRatio;
+
+  if (targetHeight > viewportHeight) {
+    targetHeight = viewportHeight;
+    targetWidth = targetHeight * canvasAspectRatio;
+  }
+
+  targetWidth = Math.max(1, Math.floor(targetWidth));
+  targetHeight = Math.max(1, Math.floor(targetHeight));
+
+  if (typeof window.resizeCanvas === 'function') {
+    window.resizeCanvas(targetWidth, targetHeight, true);
+    canvas.style.width = `${targetWidth}px`;
+    canvas.style.height = `${targetHeight}px`;
+  } else {
+    canvas.style.width = `${targetWidth}px`;
+    canvas.style.height = `${targetHeight}px`;
+  }
+
+  syncMouseFallback();
+}
+
+function watchForCanvas() {
+  if (document.querySelector('canvas')) {
+    resizeCanvasToOriginalRatio();
+    return;
+  }
+
+  canvasObserver = new MutationObserver(() => {
+    if (!document.querySelector('canvas')) return;
+    canvasObserver.disconnect();
+    canvasObserver = undefined;
+    resizeCanvasToOriginalRatio();
+  });
+  canvasObserver.observe(document.body, { childList: true, subtree: true });
 }
 
 function readPosition(message) {
@@ -78,11 +156,28 @@ function readAxis(axis, message) {
 }
 
 function updateFromMouse(event) {
-  if (hasOSCSignal(connectionOptions.signalTimeout)) return;
+  pointer = {
+    clientX: event.clientX,
+    clientY: event.clientY,
+  };
+  syncMouseFallback();
+}
 
-  position.x = x = Math.max(0, Math.min(1, event.clientX / window.innerWidth));
-  position.y = y = Math.max(0, Math.min(1, event.clientY / window.innerHeight));
-  position.z = z = 0;
+function syncMouseFallback() {
+  if (!pointer || hasOSCSignal(connectionOptions.signalTimeout)) return;
+
+  const { left, top, width, height, logicalWidth, logicalHeight } = canvasSize();
+
+  position.x = (pointer.clientX - left) * (logicalWidth / width);
+  position.y = (pointer.clientY - top) * (logicalHeight / height);
+  posNormal.x = Math.max(0, Math.min(1, position.x / logicalWidth));
+  posNormal.y = Math.max(0, Math.min(1, position.y / logicalHeight));
+  posNormal.z = 0;
+
+  x = posNormal.x;
+  y = posNormal.y;
+  z = 0;
+  position.z = 0;
 }
 
 function reconnect() {
@@ -129,8 +224,20 @@ export function setUpOSC(options = {}) {
     listeningToMouse = true;
   }
 
+  if (config.resize) {
+    window.addEventListener('resize', resizeCanvasToOriginalRatio);
+    document.addEventListener('fullscreenchange', resizeCanvasToOriginalRatio);
+    watchForCanvas();
+  }
+
   osc.open({ host: config.host, port: config.port });
   reconnectInterval = window.setInterval(reconnect, config.retryInterval);
+  fallbackInterval = window.setInterval(syncMouseFallback, 50);
+}
+
+export function resizeToOriginalRatio() {
+  if (!connectionOptions.resize) return;
+  resizeCanvasToOriginalRatio();
 }
 
 export function closeOSC() {
@@ -139,8 +246,14 @@ export function closeOSC() {
   opened = false;
   connected = false;
   window.clearInterval(reconnectInterval);
+  window.clearInterval(fallbackInterval);
   window.removeEventListener('pointermove', updateFromMouse);
+  window.removeEventListener('resize', resizeCanvasToOriginalRatio);
+  document.removeEventListener('fullscreenchange', resizeCanvasToOriginalRatio);
+  canvasObserver?.disconnect();
+  canvasObserver = undefined;
   listeningToMouse = false;
+  pointer = null;
 }
 
 export function hasOSCSignal(maxAge = 2000) {
