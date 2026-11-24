@@ -10,7 +10,8 @@ npm install
 npm run build
 ```
 
-Use `npm start` for the development server at `http://localhost:8080`.
+Use `npm start` for the development server. It selects an available port and
+prints the local URL in the terminal.
 
 ## Use
 
