@@ -1,0 +1,4 @@
+opencv-python
+numpy
+websockets
+pyrealsense2; platform_system == "Windows"
