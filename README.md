@@ -2,7 +2,26 @@
 
 Tracking template for an Intel RealSense camera and p5.js.
 
-## 1. Start the tracker
+## 1. Install with Git
+
+Install Git if it is not already available:
+
+```bash
+# macOS
+brew install git
+
+# Windows
+winget install --id Git.Git -e
+```
+
+Then clone the project:
+
+```bash
+git clone https://github.com/IAD-ZHDK/reactive-signs-tracker-2026.git
+cd reactive-signs-tracker-2026
+```
+
+## 2. Start the tracker
 
 On macOS:
 
@@ -15,13 +34,13 @@ On Windows, double-click `python_realSenseOSC/run.bat`.
 
 The first run creates a Python virtual environment and installs the required packages. A RealSense camera is used on Windows; on macOS the included demo recording is played.
 
-## 2. Start the p5.js project
+## 3. Start the p5.js project
 
 Open `p5js/index.html` in a local web server or with the VS Code Live Server extension.
 
 The tracker sends position data over WebSocket on `ws://localhost:8025`. Keep the tracker running while using the p5.js sketch.
 
-## 3. Edit the sketch
+## 4. Edit the sketch
 
 Create your animation in `p5js/sketch.js`.
 
