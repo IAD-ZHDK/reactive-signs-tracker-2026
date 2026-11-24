@@ -14,6 +14,14 @@ brew install git
 winget install --id Git.Git -e
 ```
 
+After installing on Windows, close and reopen PowerShell, then verify Git:
+
+```powershell
+git --version
+```
+
+If that still reports that `git` is not recognized, restart Windows and try again.
+
 Then clone the project:
 
 ```bash
