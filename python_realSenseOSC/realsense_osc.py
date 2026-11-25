@@ -7,7 +7,7 @@ The RealSense camera is only used on Windows. On macOS (or if no camera is found
 the recorded demo images in data/recordings are played back instead.
 
 Keys (window must be focused):
-  e   toggle "allow edits" (distance sliders + crop area)
+  e   toggle "allow edits" (distance slider + crop area)
   a   then click: set crop top-left      (edit mode)
   s   then click: set crop bottom-right  (edit mode)
   f   toggle vertical flip
@@ -132,6 +132,8 @@ class RealSense:
         cfg.enable_stream(rs.stream.color, WIDTH, HEIGHT, rs.format.bgr8, 30)
         self.pipe.start(cfg)
         self.align = rs.align(rs.stream.color)
+        # threshold must run last: hole filling before it would smear the
+        # cut-off areas horizontally
         self.threshold = rs.threshold_filter(low, high)
         self.decimation = rs.decimation_filter(DECIMATION)
         self.temporal = rs.temporal_filter()
@@ -147,7 +149,7 @@ class RealSense:
         """Returns (depth BGR image, color BGR image at small size)."""
         frames = self.align.process(self.pipe.wait_for_frames(5000))
         depth = frames.get_depth_frame()
-        for f in (self.threshold, self.decimation, self.temporal, self.holes):
+        for f in (self.decimation, self.temporal, self.holes, self.threshold):
             depth = f.process(depth)
         depth_img = np.asanyarray(self.colorizer.colorize(depth).get_data())
         color = np.asanyarray(frames.get_color_frame().get_data())
@@ -174,6 +176,7 @@ class App:
         self.record_count = 0
         self.pending_click = None
         self.saved_at = 0.0
+        self.drag = None
         self.camera = None
         self.next_camera_try = 0
         self.frames = self.load_recording()
@@ -351,9 +354,19 @@ class App:
                  "cameraFlip: %s" % self.flip]
         for i, t in enumerate(lines):
             cv2.putText(canvas, t, (20, 25 + i * 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-        if self.editable:
-            for i, t in enumerate(["'a' then click: top-left", "'s' then click: btm-right"]):
-                cv2.putText(canvas, t, (360, 25 + i * 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0xCF, 0xA2, 0x08), 1, cv2.LINE_AA)
+        mode = "EDIT MODE" if self.editable else "locked"
+        help_lines = [("e: toggle edit mode (%s)" % mode, self.editable),
+                      ("a + click: crop top-left", self.editable),
+                      ("s + click: crop bottom-right", self.editable),
+                      ("drag slider: distance range", self.editable),
+                      ("f / h: flip vertical / horizontal", True),
+                      ("q / Esc: quit", True)]
+        if self.pending_click:
+            help_lines[1 if self.pending_click == "a" else 2] = ("-> now click in the image", True)
+        for i, (t, active) in enumerate(help_lines):
+            col = (0xCF, 0xA2, 0x08) if (self.editable and i in (0, 1, 2, 3)) else ((255, 255, 255) if active else (150, 150, 150))
+            cv2.putText(canvas, t, (330, 20 + i * 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1, cv2.LINE_AA)
+        self.draw_slider(canvas)
         if time.time() - self.saved_at < 2:
             cv2.putText(canvas, "settings saved", (20, HEIGHT - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
         if self.recording:
@@ -361,46 +374,71 @@ class App:
         return canvas
 
     # ui
-    def on_mouse(self, event, x, y, *_):
-        if event != cv2.EVENT_LBUTTONDOWN or not (self.editable and self.pending_click):
+    SLIDER_X, SLIDER_Y, SLIDER_W, SLIDER_H = 20, HEIGHT - 40, int(WIDTH * 0.8), 20
+
+    def _val_to_x(self, v):
+        return self.SLIDER_X + int(v / MAX_DISTANCE * self.SLIDER_W)
+
+    def _x_to_val(self, x):
+        v = (x - self.SLIDER_X) / self.SLIDER_W * MAX_DISTANCE
+        return min(max(v, MIN_DISTANCE), MAX_DISTANCE)
+
+    def _set_range(self, low, high):
+        if high - low < 0.01:
             return
+        self.low, self.high = low, high
+        if self.camera:
+            self.camera.set_range(low, high)
+
+    def on_mouse(self, event, x, y, *_):
         try:
             _, _, ww, wh = cv2.getWindowImageRect(WINDOW)
             if ww > 0 and wh > 0:
                 x, y = x * WIDTH / ww, y * HEIGHT / wh
         except cv2.error:
             pass
-        if self.pending_click == "a":
-            self.crop_y, self.crop_x = y / HEIGHT, x / WIDTH
-        else:
-            self.crop_h = max(0.05, y / HEIGHT - self.crop_y)
-            self.crop_w = max(0.05, x / WIDTH - self.crop_x)
-        self.pending_click = None
-        self.save_settings()
-
-    def poll_range(self):
-        """Read the sliders every frame (more reliable than callbacks)."""
-        low = cv2.getTrackbarPos("low (cm)", WINDOW) / 100
-        high = cv2.getTrackbarPos("high (cm)", WINDOW) / 100
         if not self.editable:
-            # sliders are locked unless edit mode is on
-            cv2.setTrackbarPos("low (cm)", WINDOW, int(round(self.low * 100)))
-            cv2.setTrackbarPos("high (cm)", WINDOW, int(round(self.high * 100)))
+            self.drag = None
             return
-        if low >= high:
-            high = low + 0.01
-        if abs(low - self.low) > 1e-6 or abs(high - self.high) > 1e-6:
-            self.low, self.high = low, high
-            if self.camera:
-                self.camera.set_range(low, high)
+        if event == cv2.EVENT_LBUTTONDOWN:
+            if self.pending_click:
+                if self.pending_click == "a":
+                    self.crop_y, self.crop_x = y / HEIGHT, x / WIDTH
+                else:
+                    self.crop_h = max(0.05, y / HEIGHT - self.crop_y)
+                    self.crop_w = max(0.05, x / WIDTH - self.crop_x)
+                self.pending_click = None
+                self.save_settings()
+            elif self.SLIDER_Y - 10 <= y <= self.SLIDER_Y + self.SLIDER_H + 10:
+                lx, hx = self._val_to_x(self.low), self._val_to_x(self.high)
+                self.drag = "low" if abs(x - lx) <= abs(x - hx) else "high"
+        elif event == cv2.EVENT_MOUSEMOVE and self.drag:
+            v = self._x_to_val(x)
+            if self.drag == "low":
+                self._set_range(min(v, self.high - 0.01), self.high)
+            else:
+                self._set_range(self.low, max(v, self.low + 0.01))
+        elif event == cv2.EVENT_LBUTTONUP and self.drag:
+            self.drag = None
             self.save_settings()
+
+    def draw_slider(self, canvas):
+        sx, sy, sw, sh = self.SLIDER_X, self.SLIDER_Y, self.SLIDER_W, self.SLIDER_H
+        on = self.editable
+        cv2.rectangle(canvas, (sx, sy), (sx + sw, sy + sh), (90, 90, 90) if on else (60, 60, 60), -1)
+        lx, hx = self._val_to_x(self.low), self._val_to_x(self.high)
+        cv2.rectangle(canvas, (lx, sy), (hx, sy + sh), (0xCF, 0xA2, 0x08) if on else (0x52, 0x36, 0x00), -1)
+        for x in (lx, hx):
+            cv2.rectangle(canvas, (x - 3, sy - 3), (x + 3, sy + sh + 3), (255, 255, 255) if on else (120, 120, 120), -1)
+        label = "distance range: %.2f - %.2f m" % (self.low, self.high)
+        label += "" if on else "   (locked - press 'e' to edit)"
+        cv2.putText(canvas, label, (sx, sy - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                    (255, 255, 255) if on else (150, 150, 150), 1, cv2.LINE_AA)
 
     def run(self):
         cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(WINDOW, WIDTH, HEIGHT)
         cv2.setMouseCallback(WINDOW, self.on_mouse)
-        cv2.createTrackbar("low (cm)", WINDOW, int(self.low * 100), int(MAX_DISTANCE * 100), lambda _: None)
-        cv2.createTrackbar("high (cm)", WINDOW, int(self.high * 100), int(MAX_DISTANCE * 100), lambda _: None)
         print("Sending data on: ws://localhost:%d/" % PORT)
         if self.recording:
             os.makedirs(REC_DIR, exist_ok=True)
@@ -419,7 +457,6 @@ class App:
                 cv2.imwrite(os.path.join(REC_DIR, "outputImage%d.jpg" % self.record_count), depth)
                 self.record_count += 1
             self.frame_count += 1
-            self.poll_range()
 
             key = cv2.waitKey(max(1, int(1000 / 30 - (time.time() - last) * 1000))) & 0xFF
             last = time.time()
@@ -427,6 +464,10 @@ class App:
                 break
             elif key == ord("e"):
                 self.editable = not self.editable
+                self.pending_click = None
+                if not self.editable:
+                    self.drag = None
+                    self.save_settings()
             elif key in (ord("a"), ord("s")):
                 self.pending_click = chr(key)
             elif key == ord("f"):

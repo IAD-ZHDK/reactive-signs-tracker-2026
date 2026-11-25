@@ -24,7 +24,7 @@ Red boxes show detected blobs (with ID), the blue dot is the averaged position, 
 
 | Key | Action |
 |---|---|
-| `e` | toggle edit mode (enables the low/high distance sliders and crop setting) |
+| `e` | toggle edit mode (unlocks the distance slider and crop setting; locked otherwise) |
 | `a`, then click | set crop top-left (edit mode) |
 | `s`, then click | set crop bottom-right (edit mode) |
 | `r` | toggle RGB streaming |
